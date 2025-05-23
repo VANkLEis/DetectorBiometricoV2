@@ -7,6 +7,7 @@ class WebRTCService {
   private mediaStream: MediaStream | null = null;
   private currentCall: MediaConnection | null = null;
   private deviceId: string | null = null;
+  private devices: MediaDeviceInfo[] = [];
 
   private constructor() {}
 
@@ -17,7 +18,30 @@ class WebRTCService {
     return WebRTCService.instance;
   }
 
+  async initializeDevices(): Promise<void> {
+    try {
+      // First request permissions
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      stream.getTracks().forEach(track => track.stop());
+
+      // Then enumerate devices
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      this.devices = devices.filter(device => device.kind === 'videoinput');
+      
+      if (this.devices.length > 0) {
+        this.deviceId = this.devices[0].deviceId;
+      }
+    } catch (err) {
+      console.error('Error initializing devices:', err);
+      throw err;
+    }
+  }
+
   async initialize(userId: string): Promise<void> {
+    if (!this.devices.length) {
+      await this.initializeDevices();
+    }
+
     const serverConfig = getPeerServerUrl();
     this.peer = new Peer(userId, {
       ...serverConfig,
@@ -48,8 +72,7 @@ class WebRTCService {
   }
 
   async getAvailableDevices(): Promise<MediaDeviceInfo[]> {
-    const devices = await navigator.mediaDevices.enumerateDevices();
-    return devices.filter(device => device.kind === 'videoinput');
+    return this.devices;
   }
 
   async setVideoDevice(deviceId: string): Promise<void> {
