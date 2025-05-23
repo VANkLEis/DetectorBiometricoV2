@@ -12,14 +12,16 @@ export const peerConfig = {
     config: {
       iceServers: [
         { urls: ['stun:stun1.l.google.com:19302', 'stun:stun2.l.google.com:19302'] },
-        { urls: 'stun:global.stun.twilio.com:3478' }
+        { urls: 'stun:stun3.l.google.com:19302' },
+        { urls: 'stun:stun4.l.google.com:19302' },
+        { urls: 'stun:global.stun.twilio.com:3478?transport=udp' }
       ],
-      iceCandidatePoolSize: 10
+      iceCandidatePoolSize: 20
     },
-    // Add reconnect options
-    pingInterval: 3000,
-    retryTimes: 3,
-    reconnectTimer: 1000
+    // Increase reconnect options for better reliability
+    pingInterval: 2000,
+    retryTimes: 5,
+    reconnectTimer: 2000
   }
 };
 

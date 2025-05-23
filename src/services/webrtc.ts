@@ -9,7 +9,7 @@ class WebRTCService {
   private deviceId: string | null = null;
   private devices: MediaDeviceInfo[] = [];
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = 5;
+  private maxReconnectAttempts = 5; // Increased to match config
   private reconnectTimeout: number | null = null;
 
   private constructor() {}
@@ -29,9 +29,15 @@ class WebRTCService {
         throw new Error('Camera permission denied. Please enable camera access and refresh the page.');
       }
 
+      // Stop any existing streams before requesting new ones
+      if (this.mediaStream) {
+        this.mediaStream.getTracks().forEach(track => track.stop());
+        this.mediaStream = null;
+      }
+
       // Request permissions with fallback options
       const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: true, // Start with basic constraints
+        video: true,
         audio: true 
       });
       
@@ -139,7 +145,15 @@ class WebRTCService {
 
   async setVideoDevice(deviceId: string): Promise<void> {
     try {
-      // Verify device exists
+      // Stop ALL current tracks before attempting to switch
+      if (this.mediaStream) {
+        this.mediaStream.getTracks().forEach(track => {
+          track.stop();
+        });
+        this.mediaStream = null;
+      }
+
+      // Verify device exists and is available
       const devices = await navigator.mediaDevices.enumerateDevices();
       const device = devices.find(d => d.deviceId === deviceId && d.kind === 'videoinput');
       
@@ -147,21 +161,24 @@ class WebRTCService {
         throw new Error('Selected video device not found');
       }
 
-      // Stop current tracks
-      if (this.mediaStream) {
-        this.mediaStream.getTracks().forEach(track => track.stop());
-      }
-
-      // Get new stream with selected device
+      // Get new stream with selected device with fallback constraints
       this.deviceId = deviceId;
-      this.mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { 
-          deviceId: { exact: deviceId },
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
-        },
-        audio: true
-      });
+      try {
+        this.mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: { 
+            deviceId: { exact: deviceId },
+            width: { ideal: 1280, min: 640 },
+            height: { ideal: 720, min: 480 }
+          },
+          audio: true
+        });
+      } catch (err) {
+        // Fallback to basic constraints if ideal values fail
+        this.mediaStream = await navigator.mediaDevices.getUserMedia({
+          video: { deviceId: { exact: deviceId } },
+          audio: true
+        });
+      }
 
       // If in a call, replace tracks
       if (this.currentCall && this.currentCall.peerConnection) {
@@ -174,7 +191,7 @@ class WebRTCService {
       }
     } catch (err) {
       console.error('Error switching device:', err);
-      throw new Error('Failed to switch camera device. Please check if the device is available and not in use by another application.');
+      throw new Error('Failed to switch camera device. Please ensure the camera is not in use by another application and try again.');
     }
   }
 
@@ -183,17 +200,22 @@ class WebRTCService {
       const constraints: MediaStreamConstraints = {
         video: this.deviceId ? {
           deviceId: { exact: this.deviceId },
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
+          width: { ideal: 1280, min: 640 },
+          height: { ideal: 720, min: 480 }
         } : true,
         audio: true
       };
 
       try {
+        // Stop any existing tracks first
+        if (this.mediaStream) {
+          this.mediaStream.getTracks().forEach(track => track.stop());
+        }
+        
         this.mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
       } catch (err) {
         console.error('Error accessing media devices:', err);
-        throw new Error('Could not access camera or microphone. Please check your device permissions.');
+        throw new Error('Could not access camera or microphone. Please check your device permissions and ensure no other application is using the camera.');
       }
     }
     return this.mediaStream;
