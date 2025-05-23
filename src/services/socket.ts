@@ -14,12 +14,20 @@ class SocketService {
   }
 
   connect(userId: string) {
-    this.socket = io('https://your-signaling-server.com', {
-      query: { userId }
+    // Connect to free Render.com deployment
+    this.socket = io('https://securecall-signaling.onrender.com', {
+      query: { userId },
+      transports: ['websocket'],
+      reconnection: true,
+      reconnectionAttempts: 5
     });
 
     this.socket.on('connect', () => {
       console.log('Connected to signaling server');
+    });
+
+    this.socket.on('connect_error', (error) => {
+      console.error('Connection error:', error);
     });
 
     this.socket.on('disconnect', () => {
@@ -29,7 +37,7 @@ class SocketService {
 
   joinRoom(roomId: string) {
     if (this.socket) {
-      this.socket.emit('join-room', roomId);
+      this.socket.emit('join-room', { roomId });
     }
   }
 

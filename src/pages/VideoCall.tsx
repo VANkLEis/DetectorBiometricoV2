@@ -7,6 +7,20 @@ import socketService from '../services/socket';
 import { Mic, MicOff, Video as VideoIcon, VideoOff, Phone, Users, MessageSquare, Camera, Fingerprint, UserPlus, Copy, Check } from 'lucide-react';
 import RoleSelector from '../components/RoleSelector';
 
+const ICE_SERVERS = {
+  iceServers: [
+    {
+      urls: [
+        'stun:stun.l.google.com:19302',
+        'stun:stun1.l.google.com:19302',
+        'stun:stun2.l.google.com:19302',
+        'stun:stun3.l.google.com:19302',
+        'stun:stun4.l.google.com:19302',
+      ],
+    },
+  ],
+};
+
 const VideoCall: React.FC = () => {
   const { roomId } = useParams<{ roomId: string }>();
   const { user } = useAuth();
@@ -62,7 +76,8 @@ const VideoCall: React.FC = () => {
           const peer = new SimplePeer({
             initiator: role === 'interviewer',
             stream: stream,
-            trickle: false
+            trickle: true,
+            config: ICE_SERVERS
           });
 
           peer.on('signal', (signal) => {
@@ -76,6 +91,14 @@ const VideoCall: React.FC = () => {
             }
             setConnectionEstablished(true);
             setIsCalling(false);
+            setParticipantCount(2);
+          });
+
+          peer.on('error', (err) => {
+            console.error('Peer error:', err);
+            // Try to reconnect
+            peer.destroy();
+            initializeCall();
           });
 
           setPeers(prev => ({ ...prev, [peerId]: peer }));
@@ -96,7 +119,7 @@ const VideoCall: React.FC = () => {
             delete newPeers[peerId];
             setPeers(newPeers);
             setConnectionEstablished(false);
-            navigate('/dashboard');
+            setParticipantCount(1);
           }
         });
 
@@ -149,29 +172,42 @@ const VideoCall: React.FC = () => {
     setBiometricType(type);
     setScanProgress(0);
     
-    const interval = setInterval(() => {
-      setScanProgress(prev => {
-        if (prev >= 100) {
-          clearInterval(interval);
-          return 100;
-        }
-        return prev + 2;
-      });
-    }, 50);
-    
-    await new Promise(resolve => setTimeout(resolve, 3000));
-    
-    clearInterval(interval);
-    setScanProgress(100);
-    
-    setTimeout(() => {
-      setBiometricStatus(prev => ({
-        ...prev,
-        [type]: true
-      }));
-      setVerifyingBiometrics(false);
-      setBiometricType(null);
-    }, 500);
+    // Capture remote video frame
+    if (remoteVideoRef.current) {
+      const canvas = document.createElement('canvas');
+      const context = canvas.getContext('2d');
+      if (context) {
+        canvas.width = remoteVideoRef.current.videoWidth;
+        canvas.height = remoteVideoRef.current.videoHeight;
+        context.drawImage(remoteVideoRef.current, 0, 0, canvas.width, canvas.height);
+        
+        // Simulate scanning progress
+        const interval = setInterval(() => {
+          setScanProgress(prev => {
+            if (prev >= 100) {
+              clearInterval(interval);
+              return 100;
+            }
+            return prev + 2;
+          });
+        }, 50);
+        
+        // Simulate verification process
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        
+        clearInterval(interval);
+        setScanProgress(100);
+        
+        setTimeout(() => {
+          setBiometricStatus(prev => ({
+            ...prev,
+            [type]: true
+          }));
+          setVerifyingBiometrics(false);
+          setBiometricType(null);
+        }, 500);
+      }
+    }
   };
 
   const handleRoleSelected = () => {
@@ -197,14 +233,10 @@ const VideoCall: React.FC = () => {
       setMessages([...messages, newMessage]);
       setMessage('');
       
-      setTimeout(() => {
-        const response = {
-          sender: 'Remote User',
-          text: 'This is a simulated response.',
-          timestamp: new Date()
-        };
-        setMessages(prev => [...prev, response]);
-      }, 2000);
+      // Send message through peer connection
+      Object.values(peers).forEach(peer => {
+        peer.send(JSON.stringify(newMessage));
+      });
     }
   };
 
