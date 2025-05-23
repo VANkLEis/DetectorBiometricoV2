@@ -9,19 +9,30 @@ interface DeviceSelectorProps {
 const DeviceSelector: React.FC<DeviceSelectorProps> = ({ onDeviceSelect }) => {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDevice, setSelectedDevice] = useState<string>('');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const loadDevices = async () => {
       try {
+        setLoading(true);
+        setError(null);
         const availableDevices = await WebRTCService.getAvailableDevices();
         setDevices(availableDevices);
         
         if (availableDevices.length > 0) {
-          setSelectedDevice(availableDevices[0].deviceId);
-          onDeviceSelect(availableDevices[0].deviceId);
+          // Try to find DroidCam if available
+          const droidcam = availableDevices.find(d => d.label.toLowerCase().includes('droidcam'));
+          const deviceId = droidcam?.deviceId || availableDevices[0].deviceId;
+          
+          setSelectedDevice(deviceId);
+          onDeviceSelect(deviceId);
         }
       } catch (err) {
         console.error('Error loading devices:', err);
+        setError('Failed to load camera devices');
+      } finally {
+        setLoading(false);
       }
     };
 
@@ -35,11 +46,35 @@ const DeviceSelector: React.FC<DeviceSelectorProps> = ({ onDeviceSelect }) => {
     };
   }, [onDeviceSelect]);
 
-  const handleDeviceChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+  const handleDeviceChange = async (event: React.ChangeEvent<HTMLSelectElement>) => {
     const deviceId = event.target.value;
-    setSelectedDevice(deviceId);
-    onDeviceSelect(deviceId);
+    try {
+      setSelectedDevice(deviceId);
+      await WebRTCService.setVideoDevice(deviceId);
+      onDeviceSelect(deviceId);
+    } catch (err) {
+      console.error('Error switching device:', err);
+      setError('Failed to switch camera');
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center space-x-2 bg-gray-800 p-2 rounded-md">
+        <Camera className="h-5 w-5 text-gray-400 animate-pulse" />
+        <span className="text-gray-400 text-sm">Loading cameras...</span>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-center space-x-2 bg-red-800 bg-opacity-50 p-2 rounded-md">
+        <Camera className="h-5 w-5 text-red-400" />
+        <span className="text-red-400 text-sm">{error}</span>
+      </div>
+    );
+  }
 
   return (
     <div className="flex items-center space-x-2 bg-gray-800 p-2 rounded-md">

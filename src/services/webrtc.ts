@@ -21,19 +21,26 @@ class WebRTCService {
   async initializeDevices(): Promise<void> {
     try {
       // First request permissions
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      stream.getTracks().forEach(track => track.stop());
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { facingMode: 'user' }, // Default to front camera
+        audio: true 
+      });
+      
+      // Keep the stream active until we switch devices
+      this.mediaStream = stream;
 
-      // Then enumerate devices
+      // Enumerate devices
       const devices = await navigator.mediaDevices.enumerateDevices();
       this.devices = devices.filter(device => device.kind === 'videoinput');
       
       if (this.devices.length > 0) {
-        this.deviceId = this.devices[0].deviceId;
+        // Try to find DroidCam if available
+        const droidcam = this.devices.find(d => d.label.toLowerCase().includes('droidcam'));
+        this.deviceId = droidcam?.deviceId || this.devices[0].deviceId;
       }
     } catch (err) {
       console.error('Error initializing devices:', err);
-      throw err;
+      throw new Error('Could not access camera or microphone. Please check your permissions.');
     }
   }
 
@@ -66,41 +73,63 @@ class WebRTCService {
           this.handleCall(call);
         } catch (err) {
           console.error('Error answering call:', err);
+          reject(err);
         }
       });
     });
   }
 
   async getAvailableDevices(): Promise<MediaDeviceInfo[]> {
+    if (!this.devices.length) {
+      await this.initializeDevices();
+    }
     return this.devices;
   }
 
   async setVideoDevice(deviceId: string): Promise<void> {
-    this.deviceId = deviceId;
-    if (this.mediaStream) {
-      this.mediaStream.getTracks().forEach(track => track.stop());
-      this.mediaStream = null;
+    try {
+      // Stop current tracks
+      if (this.mediaStream) {
+        this.mediaStream.getTracks().forEach(track => track.stop());
+      }
+
+      // Get new stream with selected device
+      this.deviceId = deviceId;
+      this.mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: deviceId } },
+        audio: true
+      });
+
+      // If in a call, replace tracks
+      if (this.currentCall) {
+        const videoTrack = this.mediaStream.getVideoTracks()[0];
+        const sender = this.currentCall.peerConnection?.getSenders()
+          .find(s => s.track?.kind === 'video');
+        if (sender) {
+          await sender.replaceTrack(videoTrack);
+        }
+      }
+    } catch (err) {
+      console.error('Error switching device:', err);
+      throw new Error('Failed to switch camera device');
     }
-    await this.getLocalStream();
   }
 
   async getLocalStream(): Promise<MediaStream> {
-    if (this.mediaStream) {
-      return this.mediaStream;
-    }
+    if (!this.mediaStream) {
+      const constraints: MediaStreamConstraints = {
+        video: this.deviceId ? { deviceId: { exact: this.deviceId } } : true,
+        audio: true
+      };
 
-    const constraints: MediaStreamConstraints = {
-      video: this.deviceId ? { deviceId: { exact: this.deviceId } } : true,
-      audio: true
-    };
-
-    try {
-      this.mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
-      return this.mediaStream;
-    } catch (err) {
-      console.error('Error accessing media devices:', err);
-      throw err;
+      try {
+        this.mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (err) {
+        console.error('Error accessing media devices:', err);
+        throw new Error('Could not access camera or microphone');
+      }
     }
+    return this.mediaStream;
   }
 
   async makeCall(remotePeerId: string): Promise<void> {
