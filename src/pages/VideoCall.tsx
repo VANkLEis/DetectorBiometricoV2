@@ -2,15 +2,15 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useRole } from '../contexts/RoleContext';
-import { useVerification } from '../contexts/VerificationContext';
 import SimplePeer from 'simple-peer';
+import socketService from '../services/socket';
 import { Mic, MicOff, Video as VideoIcon, VideoOff, Phone, Users, MessageSquare, Camera, Fingerprint, UserPlus, Copy, Check } from 'lucide-react';
 import RoleSelector from '../components/RoleSelector';
 
 const VideoCall: React.FC = () => {
   const { roomId } = useParams<{ roomId: string }>();
   const { user } = useAuth();
-  const { role, setRole } = useRole();
+  const { role } = useRole();
   const navigate = useNavigate();
   
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
@@ -19,6 +19,7 @@ const VideoCall: React.FC = () => {
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [isCalling, setIsCalling] = useState(true);
   const [connectionEstablished, setConnectionEstablished] = useState(false);
+  const [peers, setPeers] = useState<{ [key: string]: SimplePeer.Instance }>({});
   const [chatOpen, setChatOpen] = useState(false);
   const [message, setMessage] = useState('');
   const [messages, setMessages] = useState<{ sender: string; text: string; timestamp: Date }[]>([]);
@@ -36,58 +37,109 @@ const VideoCall: React.FC = () => {
   
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
-  const peerRef = useRef<SimplePeer.Instance | null>(null);
 
   useEffect(() => {
-    if (!role) return;
-    initCall();
-    return () => cleanup();
-  }, [role]);
-
-  const cleanup = () => {
-    if (localStream) {
-      localStream.getTracks().forEach(track => track.stop());
-    }
-    if (peerRef.current) {
-      peerRef.current.destroy();
-    }
-    endVideoSession();
-  };
-  
-  const initCall = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: true, 
-        audio: true 
-      });
-      
-      setLocalStream(stream);
-      
-      if (localVideoRef.current) {
-        localVideoRef.current.srcObject = stream;
-      }
-      
-      // Simulate peer connection
-      setTimeout(() => {
-        setIsCalling(false);
-        setConnectionEstablished(true);
-        setParticipantCount(2);
+    if (!role || !roomId || !user) return;
+    
+    const initializeCall = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          video: true, 
+          audio: true 
+        });
         
-        const mockStream = new MediaStream();
-        setRemoteStream(mockStream);
-        
-        if (remoteVideoRef.current) {
-          remoteVideoRef.current.srcObject = mockStream;
+        setLocalStream(stream);
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
         }
-        
-        recordVideoSession();
-      }, 3000);
-      
-    } catch (err) {
-      console.error('Error starting video call:', err);
-      alert('Could not access camera or microphone. Please check permissions and try again.');
-      navigate('/dashboard');
+
+        // Connect to signaling server
+        socketService.connect(user.id.toString());
+        socketService.joinRoom(roomId);
+
+        // Handle peer joining
+        socketService.onPeerJoined((peerId) => {
+          const peer = new SimplePeer({
+            initiator: role === 'interviewer',
+            stream: stream,
+            trickle: false
+          });
+
+          peer.on('signal', (signal) => {
+            socketService.sendSignal(peerId, signal);
+          });
+
+          peer.on('stream', (remoteStream) => {
+            setRemoteStream(remoteStream);
+            if (remoteVideoRef.current) {
+              remoteVideoRef.current.srcObject = remoteStream;
+            }
+            setConnectionEstablished(true);
+            setIsCalling(false);
+          });
+
+          setPeers(prev => ({ ...prev, [peerId]: peer }));
+        });
+
+        // Handle incoming signals
+        socketService.onSignal(({ peerId, signal }) => {
+          if (peers[peerId]) {
+            peers[peerId].signal(signal);
+          }
+        });
+
+        // Handle peer disconnection
+        socketService.onPeerLeft((peerId) => {
+          if (peers[peerId]) {
+            peers[peerId].destroy();
+            const newPeers = { ...peers };
+            delete newPeers[peerId];
+            setPeers(newPeers);
+            setConnectionEstablished(false);
+            navigate('/dashboard');
+          }
+        });
+
+      } catch (err) {
+        console.error('Error accessing media devices:', err);
+        alert('Could not access camera or microphone');
+        navigate('/dashboard');
+      }
+    };
+
+    initializeCall();
+
+    return () => {
+      if (localStream) {
+        localStream.getTracks().forEach(track => track.stop());
+      }
+      Object.values(peers).forEach(peer => peer.destroy());
+      socketService.disconnect();
+    };
+  }, [role, roomId, user]);
+
+  const toggleAudio = () => {
+    if (localStream) {
+      localStream.getAudioTracks().forEach(track => {
+        track.enabled = !track.enabled;
+      });
+      setIsAudioMuted(!isAudioMuted);
     }
+  };
+
+  const toggleVideo = () => {
+    if (localStream) {
+      localStream.getVideoTracks().forEach(track => {
+        track.enabled = !track.enabled;
+      });
+      setIsVideoOff(!isVideoOff);
+    }
+  };
+
+  const endCall = () => {
+    Object.values(peers).forEach(peer => peer.destroy());
+    socketService.disconnect();
+    navigate('/dashboard');
   };
 
   const verifyBiometric = async (type: 'face' | 'fingerprint') => {
@@ -97,7 +149,6 @@ const VideoCall: React.FC = () => {
     setBiometricType(type);
     setScanProgress(0);
     
-    // Animate scanning progress
     const interval = setInterval(() => {
       setScanProgress(prev => {
         if (prev >= 100) {
@@ -108,7 +159,6 @@ const VideoCall: React.FC = () => {
       });
     }, 50);
     
-    // Simulate verification process
     await new Promise(resolve => setTimeout(resolve, 3000));
     
     clearInterval(interval);
@@ -135,45 +185,6 @@ const VideoCall: React.FC = () => {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const recordVideoSession = () => {
-    console.log('Recording video session to database:', {
-      caller_id: user?.id,
-      receiver_id: 2,
-      room_id: roomId,
-      status: 'connected'
-    });
-  };
-  
-  const endVideoSession = () => {
-    console.log('Ending video session in database:', {
-      room_id: roomId,
-      end_time: new Date(),
-      status: 'completed'
-    });
-  };
-  
-  const toggleAudio = () => {
-    if (localStream) {
-      localStream.getAudioTracks().forEach(track => {
-        track.enabled = !track.enabled;
-      });
-      setIsAudioMuted(!isAudioMuted);
-    }
-  };
-  
-  const toggleVideo = () => {
-    if (localStream) {
-      localStream.getVideoTracks().forEach(track => {
-        track.enabled = !track.enabled;
-      });
-      setIsVideoOff(!isVideoOff);
-    }
-  };
-  
-  const endCall = () => {
-    navigate('/dashboard');
-  };
-  
   const sendMessage = (e: React.FormEvent) => {
     e.preventDefault();
     if (message.trim()) {
