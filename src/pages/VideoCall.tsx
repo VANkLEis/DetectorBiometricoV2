@@ -2,24 +2,10 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useRole } from '../contexts/RoleContext';
-import SimplePeer from 'simple-peer';
-import socketService from '../services/socket';
 import { Mic, MicOff, Video as VideoIcon, VideoOff, Phone, Users, MessageSquare, Camera, Fingerprint, UserPlus, Copy, Check } from 'lucide-react';
 import RoleSelector from '../components/RoleSelector';
-
-const ICE_SERVERS = {
-  iceServers: [
-    {
-      urls: [
-        'stun:stun.l.google.com:19302',
-        'stun:stun1.l.google.com:19302',
-        'stun:stun2.l.google.com:19302',
-        'stun:stun3.l.google.com:19302',
-        'stun:stun4.l.google.com:19302',
-      ],
-    },
-  ],
-};
+import DeviceSelector from '../components/DeviceSelector';
+import WebRTCService from '../services/webrtc';
 
 const VideoCall: React.FC = () => {
   const { roomId } = useParams<{ roomId: string }>();
@@ -33,7 +19,6 @@ const VideoCall: React.FC = () => {
   const [isVideoOff, setIsVideoOff] = useState(false);
   const [isCalling, setIsCalling] = useState(true);
   const [connectionEstablished, setConnectionEstablished] = useState(false);
-  const [peers, setPeers] = useState<{ [key: string]: SimplePeer.Instance }>({});
   const [chatOpen, setChatOpen] = useState(false);
   const [message, setMessage] = useState('');
   const [messages, setMessages] = useState<{ sender: string; text: string; timestamp: Date }[]>([]);
@@ -54,92 +39,69 @@ const VideoCall: React.FC = () => {
 
   useEffect(() => {
     if (!role || !roomId || !user) return;
-    
-    const initializeCall = async () => {
+
+    const initializeWebRTC = async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-          video: true, 
-          audio: true 
-        });
-        
+        await WebRTCService.initialize(user.id.toString());
+        const stream = await WebRTCService.getLocalStream();
         setLocalStream(stream);
+        
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
         }
 
-        // Connect to signaling server
-        socketService.connect(user.id.toString());
-        socketService.joinRoom(roomId);
-
-        // Handle peer joining
-        socketService.onPeerJoined((peerId) => {
-          const peer = new SimplePeer({
-            initiator: role === 'interviewer',
-            stream: stream,
-            trickle: true,
-            config: ICE_SERVERS
-          });
-
-          peer.on('signal', (signal) => {
-            socketService.sendSignal(peerId, signal);
-          });
-
-          peer.on('stream', (remoteStream) => {
-            setRemoteStream(remoteStream);
-            if (remoteVideoRef.current) {
-              remoteVideoRef.current.srcObject = remoteStream;
-            }
-            setConnectionEstablished(true);
-            setIsCalling(false);
-            setParticipantCount(2);
-          });
-
-          peer.on('error', (err) => {
-            console.error('Peer error:', err);
-            // Try to reconnect
-            peer.destroy();
-            initializeCall();
-          });
-
-          setPeers(prev => ({ ...prev, [peerId]: peer }));
-        });
-
-        // Handle incoming signals
-        socketService.onSignal(({ peerId, signal }) => {
-          if (peers[peerId]) {
-            peers[peerId].signal(signal);
+        // Handle incoming streams
+        window.addEventListener('remoteStream', ((event: CustomEvent) => {
+          setRemoteStream(event.detail);
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = event.detail;
           }
+          setConnectionEstablished(true);
+          setIsCalling(false);
+          setParticipantCount(2);
+        }) as EventListener);
+
+        // Handle call ended
+        window.addEventListener('callEnded', () => {
+          setConnectionEstablished(false);
+          setParticipantCount(1);
         });
 
-        // Handle peer disconnection
-        socketService.onPeerLeft((peerId) => {
-          if (peers[peerId]) {
-            peers[peerId].destroy();
-            const newPeers = { ...peers };
-            delete newPeers[peerId];
-            setPeers(newPeers);
-            setConnectionEstablished(false);
-            setParticipantCount(1);
-          }
-        });
-
+        if (role === 'interviewer') {
+          // Wait for interviewee to join
+          setIsCalling(true);
+        } else {
+          // Join existing call
+          await WebRTCService.makeCall(roomId);
+        }
       } catch (err) {
-        console.error('Error accessing media devices:', err);
+        console.error('Error initializing WebRTC:', err);
         alert('Could not access camera or microphone');
         navigate('/dashboard');
       }
     };
 
-    initializeCall();
+    initializeWebRTC();
 
     return () => {
-      if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
-      }
-      Object.values(peers).forEach(peer => peer.destroy());
-      socketService.disconnect();
+      WebRTCService.disconnect();
+      window.removeEventListener('remoteStream', () => {});
+      window.removeEventListener('callEnded', () => {});
     };
   }, [role, roomId, user]);
+
+  const handleDeviceSelect = async (deviceId: string) => {
+    try {
+      await WebRTCService.setVideoDevice(deviceId);
+      const newStream = await WebRTCService.getLocalStream();
+      setLocalStream(newStream);
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = newStream;
+      }
+    } catch (err) {
+      console.error('Error changing device:', err);
+    }
+  };
 
   const toggleAudio = () => {
     if (localStream) {
@@ -160,8 +122,7 @@ const VideoCall: React.FC = () => {
   };
 
   const endCall = () => {
-    Object.values(peers).forEach(peer => peer.destroy());
-    socketService.disconnect();
+    WebRTCService.disconnect();
     navigate('/dashboard');
   };
 
@@ -221,46 +182,10 @@ const VideoCall: React.FC = () => {
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const sendMessage = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (message.trim()) {
-      const newMessage = {
-        sender: user?.username || 'You',
-        text: message,
-        timestamp: new Date()
-      };
-      
-      setMessages([...messages, newMessage]);
-      setMessage('');
-      
-      // Send message through peer connection
-      Object.values(peers).forEach(peer => {
-        peer.send(JSON.stringify(newMessage));
-      });
-    }
-  };
-
   if (showRoleSelector) {
     return <RoleSelector onSelect={handleRoleSelected} />;
   }
 
-  if (participantCount > 2) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-900">
-        <div className="text-white text-center">
-          <h2 className="text-2xl font-semibold mb-4">Room is Full</h2>
-          <p>This interview room is limited to 2 participants.</p>
-          <button
-            onClick={() => navigate('/dashboard')}
-            className="mt-4 px-4 py-2 bg-blue-600 rounded-md hover:bg-blue-700"
-          >
-            Return to Dashboard
-          </button>
-        </div>
-      </div>
-    );
-  }
-  
   return (
     <div className="flex flex-col h-screen bg-gray-900">
       {/* Call Status */}
@@ -276,7 +201,7 @@ const VideoCall: React.FC = () => {
 
       {/* Biometric Verification Animation */}
       {verifyingBiometrics && biometricType && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center bg-gray-900 bg-opacity-90">
+        <div className="absolute right-0 top-0 bottom-0 w-1/2 z-50 flex items-center justify-center bg-gray-900 bg-opacity-90">
           <div className="text-center text-white">
             <div className="relative mb-8">
               {biometricType === 'face' ? (
@@ -324,91 +249,51 @@ const VideoCall: React.FC = () => {
       
       {/* Main call interface */}
       <div className="flex flex-1 overflow-hidden">
-        {/* Remote video (full screen) */}
-        <div className="relative flex-1 bg-black">
-          {connectionEstablished ? (
-            <video
-              ref={remoteVideoRef}
-              autoPlay
-              playsInline
-              className="w-full h-full object-cover"
-            />
-          ) : (
-            <div className="absolute inset-0 flex items-center justify-center">
-              <Users className="h-24 w-24 text-gray-500 opacity-50" />
-            </div>
-          )}
-          
-          {/* Local video (picture-in-picture) */}
-          <div className="absolute bottom-4 right-4 w-48 h-36 overflow-hidden rounded-lg shadow-lg">
+        {/* Split screen layout */}
+        <div className="flex flex-1">
+          {/* Interviewer's video (left side) */}
+          <div className="w-1/2 relative bg-black border-r border-gray-800">
             <video
               ref={localVideoRef}
               autoPlay
               playsInline
               muted
-              className={`w-full h-full object-cover ${isVideoOff ? 'opacity-0' : ''}`}
+              className="w-full h-full object-cover"
             />
             {isVideoOff && (
-              <div className="absolute inset-0 bg-gray-800 flex items-center justify-center">
-                <VideoOff className="h-10 w-10 text-gray-400" />
+              <div className="absolute inset-0 flex items-center justify-center bg-gray-800">
+                <VideoOff className="h-16 w-16 text-gray-400" />
+              </div>
+            )}
+            {role === 'interviewer' && (
+              <div className="absolute top-4 left-4">
+                <DeviceSelector onDeviceSelect={handleDeviceSelect} />
               </div>
             )}
           </div>
 
-          {/* Biometric verification status (for interviewer) */}
-          {role === 'interviewer' && connectionEstablished && (
-            <div className="absolute top-4 left-4 bg-gray-800 bg-opacity-90 rounded-lg p-4">
-              <h3 className="text-white text-sm font-semibold mb-2">Verification Status</h3>
-              <div className="space-y-2">
-                <div className="flex items-center">
-                  <div className={`w-3 h-3 rounded-full ${biometricStatus.face ? 'bg-green-500' : 'bg-red-500'} mr-2`}></div>
-                  <span className="text-white text-sm">Facial Verification</span>
-                </div>
-                <div className="flex items-center">
-                  <div className={`w-3 h-3 rounded-full ${biometricStatus.fingerprint ? 'bg-green-500' : 'bg-red-500'} mr-2`}></div>
-                  <span className="text-white text-sm">Fingerprint Verification</span>
-                </div>
+          {/* Interviewee's video (right side) */}
+          <div className="w-1/2 relative bg-black">
+            {connectionEstablished ? (
+              <video
+                ref={remoteVideoRef}
+                autoPlay
+                playsInline
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <div className="absolute inset-0 flex items-center justify-center">
+                <Users className="h-24 w-24 text-gray-500 opacity-50" />
               </div>
-            </div>
-          )}
-
-          {/* Invite overlay */}
-          {showInvite && (
-            <div className="absolute top-4 right-4 bg-gray-800 bg-opacity-90 rounded-lg p-4 w-96">
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-white font-semibold">Invite Participant</h3>
-                <button 
-                  onClick={() => setShowInvite(false)}
-                  className="text-gray-400 hover:text-white"
-                >
-                  ×
-                </button>
+            )}
+            {role === 'interviewee' && (
+              <div className="absolute top-4 right-4">
+                <DeviceSelector onDeviceSelect={handleDeviceSelect} />
               </div>
-              <div className="bg-gray-900 rounded p-2 flex items-center mb-2">
-                <input
-                  type="text"
-                  readOnly
-                  value={`${window.location.origin}/video-call/${roomId}`}
-                  className="bg-transparent text-white flex-1 outline-none text-sm"
-                />
-                <button
-                  onClick={copyInviteLink}
-                  className="ml-2 p-1 rounded hover:bg-gray-700"
-                >
-                  {copied ? (
-                    <Check className="h-5 w-5 text-green-500" />
-                  ) : (
-                    <Copy className="h-5 w-5 text-gray-400" />
-                  )}
-                </button>
-              </div>
-              <p className="text-gray-400 text-sm">
-                Share this link with the participant you want to invite.
-              </p>
-            </div>
-          )}
+            )}
+          </div>
         </div>
-        
+
         {/* Chat sidebar */}
         {chatOpen && (
           <div className="w-80 bg-gray-800 border-l border-gray-700 flex flex-col">
@@ -419,33 +304,43 @@ const VideoCall: React.FC = () => {
               {messages.map((msg, index) => (
                 <div 
                   key={index} 
-                  className={`flex flex-col ${msg.sender === user?.username || msg.sender === 'You' ? 'items-end' : 'items-start'}`}
+                  className={`flex flex-col ${msg.sender === user?.username ? 'items-end' : 'items-start'}`}
                 >
                   <div className={`rounded-lg px-3 py-2 max-w-xs ${
-                    msg.sender === user?.username || msg.sender === 'You' 
+                    msg.sender === user?.username 
                       ? 'bg-blue-600 text-white' 
                       : 'bg-gray-700 text-gray-100'
                   }`}>
                     <p>{msg.text}</p>
                   </div>
                   <span className="text-xs text-gray-500 mt-1">
-                    {msg.sender} · {msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    {msg.sender} · {msg.timestamp.toLocaleTimeString()}
                   </span>
                 </div>
               ))}
             </div>
             <div className="p-4 border-t border-gray-700">
-              <form onSubmit={sendMessage} className="flex">
+              <form onSubmit={(e) => {
+                e.preventDefault();
+                if (message.trim()) {
+                  setMessages([...messages, {
+                    sender: user?.username || '',
+                    text: message,
+                    timestamp: new Date()
+                  }]);
+                  setMessage('');
+                }
+              }} className="flex">
                 <input
                   type="text"
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
-                  className="flex-1 bg-gray-700 text-white rounded-l-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="flex-1 bg-gray-700 text-white rounded-l-md px-3 py-2 focus:outline-none"
                   placeholder="Type a message..."
                 />
                 <button
                   type="submit"
-                  className="bg-blue-600 text-white px-4 py-2 rounded-r-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="bg-blue-600 text-white px-4 py-2 rounded-r-md hover:bg-blue-700"
                 >
                   Send
                 </button>
@@ -454,7 +349,7 @@ const VideoCall: React.FC = () => {
           </div>
         )}
       </div>
-      
+
       {/* Call controls */}
       <div className="bg-gray-800 px-6 py-3 flex items-center justify-center space-x-4">
         <button
@@ -493,15 +388,7 @@ const VideoCall: React.FC = () => {
           <MessageSquare className="h-6 w-6 text-white" />
         </button>
 
-        <button
-          onClick={() => setShowInvite(!showInvite)}
-          className={`p-3 rounded-full ${showInvite ? 'bg-blue-500 hover:bg-blue-600' : 'bg-gray-700 hover:bg-gray-600'}`}
-        >
-          <UserPlus className="h-6 w-6 text-white" />
-        </button>
-
-        {/* Biometric verification controls (only for interviewer) */}
-        {role === 'interviewer' && connectionEstablished && (
+        {role === 'interviewer' && (
           <>
             <button
               onClick={() => verifyBiometric('face')}
@@ -532,7 +419,50 @@ const VideoCall: React.FC = () => {
             </button>
           </>
         )}
+
+        <button
+          onClick={() => setShowInvite(!showInvite)}
+          className={`p-3 rounded-full ${showInvite ? 'bg-blue-500 hover:bg-blue-600' : 'bg-gray-700 hover:bg-gray-600'}`}
+        >
+          <UserPlus className="h-6 w-6 text-white" />
+        </button>
       </div>
+
+      {/* Invite overlay */}
+      {showInvite && (
+        <div className="absolute top-4 right-4 bg-gray-800 bg-opacity-90 rounded-lg p-4 w-96">
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="text-white font-semibold">Invite Participant</h3>
+            <button 
+              onClick={() => setShowInvite(false)}
+              className="text-gray-400 hover:text-white"
+            >
+              ×
+            </button>
+          </div>
+          <div className="bg-gray-900 rounded p-2 flex items-center mb-2">
+            <input
+              type="text"
+              readOnly
+              value={`${window.location.origin}/video-call/${roomId}`}
+              className="bg-transparent text-white flex-1 outline-none text-sm"
+            />
+            <button
+              onClick={copyInviteLink}
+              className="ml-2 p-1 rounded hover:bg-gray-700"
+            >
+              {copied ? (
+                <Check className="h-5 w-5 text-green-500" />
+              ) : (
+                <Copy className="h-5 w-5 text-gray-400" />
+              )}
+            </button>
+          </div>
+          <p className="text-gray-400 text-sm">
+            Share this link with the participant you want to invite.
+          </p>
+        </div>
+      )}
     </div>
   );
 };
