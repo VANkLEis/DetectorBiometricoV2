@@ -1,9 +1,9 @@
 // PeerJS server configuration
 export const peerConfig = {
-  // Use the browser's hostname for WebContainer compatibility
-  SERVER_URL: typeof window !== 'undefined' ? window.location.hostname : 'localhost',
+  // Use localhost for WebContainer compatibility
+  SERVER_URL: 'localhost',
   SERVER_PORT: 9000,
-  SERVER_PATH: '/peerjs',
+  SERVER_PATH: '/myapp',
   
   // PeerJS configuration options
   CONFIG: {
