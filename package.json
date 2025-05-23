@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "peer-server": "peerjs --port 9000 --key peerjs --path /peerjs"
   },
   "dependencies": {
     "lucide-react": "^0.344.0",
