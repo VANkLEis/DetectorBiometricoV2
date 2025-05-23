@@ -1,14 +1,14 @@
 // PeerJS server configuration
 export const peerConfig = {
-  // Use 127.0.0.1 for WebContainer compatibility
-  SERVER_URL: '127.0.0.1',
-  SERVER_PORT: 9000,
+  // Use secure WebSocket connection to PeerJS server
+  SERVER_URL: 'securecall-peer.onrender.com',
+  SERVER_PORT: 443, // Standard HTTPS port
   SERVER_PATH: '/peerjs',
   
   // PeerJS configuration options
   CONFIG: {
     debug: 3, // Log level (0-3)
-    secure: false, // Set to true when using HTTPS
+    secure: true, // Required for HTTPS connections
     config: {
       iceServers: [
         { urls: 'stun:stun.l.google.com:19302' },
