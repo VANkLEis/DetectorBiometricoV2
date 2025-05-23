@@ -1,8 +1,7 @@
 // PeerJS server configuration
 export const peerConfig = {
-  // Change this URL when deploying to production
-  // Example: https://your-peerjs-server.onrender.com
-  SERVER_URL: 'localhost',
+  // Use the browser's hostname for WebContainer compatibility
+  SERVER_URL: typeof window !== 'undefined' ? window.location.hostname : 'localhost',
   SERVER_PORT: 9000,
   SERVER_PATH: '/peerjs',
   

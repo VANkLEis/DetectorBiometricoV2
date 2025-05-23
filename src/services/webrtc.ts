@@ -1,5 +1,5 @@
 import { Peer, MediaConnection } from 'peerjs';
-import { peerConfig } from '../config/peer.config';
+import { peerConfig, getPeerServerUrl } from '../config/peer.config';
 
 class WebRTCService {
   private static instance: WebRTCService;
@@ -18,11 +18,10 @@ class WebRTCService {
   }
 
   async initialize(userId: string): Promise<void> {
+    const serverConfig = getPeerServerUrl();
     this.peer = new Peer(userId, {
-      host: 'localhost',
-      port: 9000,
-      path: '/peerjs',
-      debug: 2
+      ...serverConfig,
+      ...peerConfig.CONFIG
     });
 
     return new Promise((resolve, reject) => {
