@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { useRole } from '../contexts/RoleContext';
-import { Mic, MicOff, Video as VideoIcon, VideoOff, Phone, Users, MessageSquare, Camera, Fingerprint, UserPlus, Copy, Check } from 'lucide-react';
+import { Mic, MicOff, Video as VideoIcon, VideoOff, Phone, Users, MessageSquare, Camera, Fingerprint, UserPlus, Copy, Check, AlertTriangle } from 'lucide-react';
 import RoleSelector from '../components/RoleSelector';
 import DeviceSelector from '../components/DeviceSelector';
 import WebRTCService from '../services/webrtc';
@@ -33,15 +33,18 @@ const VideoCall: React.FC = () => {
     face: boolean;
     fingerprint: boolean;
   }>({ face: false, fingerprint: false });
+  const [connectionError, setConnectionError] = useState<string | null>(null);
   
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const remoteVideoRef = useRef<HTMLVideoElement>(null);
+  const reconnectTimeoutRef = useRef<number>();
 
   useEffect(() => {
     if (!role || !roomId || !user) return;
 
     const initializeWebRTC = async () => {
       try {
+        setConnectionError(null);
         await WebRTCService.initialize(user.id.toString());
         const stream = await WebRTCService.getLocalStream();
         setLocalStream(stream);
@@ -67,6 +70,18 @@ const VideoCall: React.FC = () => {
           setParticipantCount(1);
         });
 
+        // Handle connection errors
+        window.addEventListener('peerError', ((event: CustomEvent) => {
+          const errorMessage = event.detail?.message || 'Connection error occurred';
+          setConnectionError(errorMessage);
+          setIsCalling(false);
+          
+          // Attempt to reconnect after 5 seconds
+          reconnectTimeoutRef.current = window.setTimeout(() => {
+            initializeWebRTC();
+          }, 5000);
+        }) as EventListener);
+
         if (role === 'interviewer') {
           // Wait for interviewee to join
           setIsCalling(true);
@@ -76,8 +91,8 @@ const VideoCall: React.FC = () => {
         }
       } catch (err) {
         console.error('Error initializing WebRTC:', err);
-        alert('Could not access camera or microphone');
-        navigate('/dashboard');
+        setConnectionError('Failed to connect to video call. Please check your network connection and try again.');
+        setIsCalling(false);
       }
     };
 
@@ -87,6 +102,10 @@ const VideoCall: React.FC = () => {
       WebRTCService.disconnect();
       window.removeEventListener('remoteStream', () => {});
       window.removeEventListener('callEnded', () => {});
+      window.removeEventListener('peerError', () => {});
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
     };
   }, [role, roomId, user]);
 
@@ -100,6 +119,7 @@ const VideoCall: React.FC = () => {
       }
     } catch (err) {
       console.error('Error changing device:', err);
+      setConnectionError('Failed to switch camera device. Please try again.');
     }
   };
 
@@ -182,12 +202,46 @@ const VideoCall: React.FC = () => {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleRetryConnection = () => {
+    setIsCalling(true);
+    setConnectionError(null);
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+    }
+    WebRTCService.disconnect();
+    WebRTCService.initialize(user?.id.toString() || '').then(() => {
+      if (role === 'interviewee') {
+        WebRTCService.makeCall(roomId || '');
+      }
+    }).catch(err => {
+      console.error('Retry connection failed:', err);
+      setConnectionError('Failed to reconnect. Please check your network connection and try again.');
+      setIsCalling(false);
+    });
+  };
+
   if (showRoleSelector) {
     return <RoleSelector onSelect={handleRoleSelected} />;
   }
 
   return (
     <div className="flex flex-col h-screen bg-gray-900">
+      {/* Connection Error Message */}
+      {connectionError && (
+        <div className="absolute inset-x-0 top-4 flex justify-center z-50">
+          <div className="bg-red-500 text-white px-6 py-3 rounded-lg shadow-lg flex items-center">
+            <AlertTriangle className="h-6 w-6 mr-2" />
+            <span>{connectionError}</span>
+            <button
+              onClick={handleRetryConnection}
+              className="ml-4 bg-white text-red-500 px-3 py-1 rounded hover:bg-red-100 transition-colors"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Call Status */}
       {isCalling && (
         <div className="absolute inset-0 z-50 flex items-center justify-center bg-gray-900 bg-opacity-90">
@@ -199,6 +253,7 @@ const VideoCall: React.FC = () => {
         </div>
       )}
 
+      {/* Rest of the component remains unchanged */}
       {/* Biometric Verification Animation */}
       {verifyingBiometrics && biometricType && (
         <div className="absolute right-0 top-0 bottom-0 w-1/2 z-50 flex items-center justify-center bg-gray-900 bg-opacity-90">
